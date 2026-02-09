@@ -1,13 +1,11 @@
 <div class="st_sidekick_pipeline_block" id="st_sidekick_pipeline_settings">
-  <h4>Sidekick Pipeline (MVP)</h4>
+  <h4>Sidekick Pipeline</h4>
+  
+  <!-- Main Settings -->
   <div class="st_sidekick_pipeline_row">
     <label class="checkbox_label flexNoGap">
       <input id="st_sidekick_pipeline_enabled" type="checkbox" />
       <span>Enabled</span>
-    </label>
-    <label class="checkbox_label flexNoGap">
-      <input id="st_sidekick_pipeline_filter_instructions" type="checkbox" />
-      <span>Filter operational instructions</span>
     </label>
     <label class="checkbox_label flexNoGap">
       <input id="st_sidekick_pipeline_reduce_history" type="checkbox" />
@@ -19,6 +17,7 @@
     </label>
   </div>
 
+  <!-- Ollama Settings -->
   <div class="st_sidekick_pipeline_row" style="margin-top: 8px;">
     <label>Ollama URL
       <input id="st_sidekick_pipeline_ollama_url" type="text" class="text_pole" placeholder="http://localhost:11434/v1" />
@@ -38,13 +37,113 @@
     <label>Cooldown turns
       <input id="st_sidekick_pipeline_cooldown" type="number" class="text_pole" min="0" max="50" step="1" />
     </label>
-    <button id="st_sidekick_pipeline_show_state" type="button" class="menu_button">Show last state</button>
-    <button id="st_sidekick_pipeline_force" type="button" class="menu_button">Force summarize now</button>
+    <button id="st_sidekick_pipeline_show_state" type="button" class="menu_button">Show Last State</button>
+    <button id="st_sidekick_pipeline_force" type="button" class="menu_button">Force Summarize Now</button>
   </div>
 
-  <div class="st_sidekick_pipeline_row st_sidekick_pipeline_dim" style="margin-top: 8px;">
-    <span>Runs only for normal/continue. Reviewer stage is MVP-off (issues only).</span>
+  <!-- World Info Cache Section -->
+  <h4 style="margin-top: 16px;">World Info Caching</h4>
+  <div class="st_sidekick_pipeline_row">
+    <button id="st_sidekick_pipeline_summarize_wi" type="button" class="menu_button">
+      <i class="fa-solid fa-book"></i> Summarize World Info
+    </button>
+    <button id="st_sidekick_pipeline_view_wi_cache" type="button" class="menu_button">
+      <i class="fa-solid fa-table"></i> View/Edit WI Cache
+    </button>
+  </div>
+  <div class="st_sidekick_pipeline_dim" style="margin-top: 4px; font-size: 12px;">
+    Creates 2-level summaries (concise + bare-bones) for all enabled world info entries with hash-based caching.
   </div>
 
-  <div id="st_sidekick_pipeline_status" class="st_sidekick_pipeline_mono" style="margin-top: 8px;"></div>
+  <!-- Message Summarization Section -->
+  <h4 style="margin-top: 16px;">Message Summarization</h4>
+  <div class="st_sidekick_pipeline_row">
+    <button id="st_sidekick_pipeline_summarize_messages" type="button" class="menu_button">
+      <i class="fa-solid fa-compress"></i> Summarize All Messages
+    </button>
+  </div>
+  <div class="st_sidekick_pipeline_dim" style="margin-top: 4px; font-size: 12px;">
+    Auto-summarizes new assistant messages. Click button to bulk-process existing messages.
+  </div>
+
+  <!-- Vector/RAG Section -->
+  <h4 style="margin-top: 16px;">Vector Search & RAG</h4>
+  
+  <div id="st_sidekick_vector_warning" class="st_sidekick_warning_box" style="display: none;">
+    <i class="fa-solid fa-triangle-exclamation"></i>
+    <span>Vector extension not found. Install from Extensions panel to enable RAG features.</span>
+  </div>
+  
+  <div class="st_sidekick_pipeline_row">
+    <label class="checkbox_label flexNoGap">
+      <input id="st_sidekick_pipeline_rag_enabled" type="checkbox" />
+      <span>Use RAG for World Info</span>
+    </label>
+    <label>RAG Threshold
+      <input id="st_sidekick_pipeline_rag_threshold" type="number" class="text_pole" min="0.5" max="0.9" step="0.05" value="0.7" />
+    </label>
+    <label>RAG Top K
+      <input id="st_sidekick_pipeline_rag_topk" type="number" class="text_pole" min="1" max="20" step="1" value="5" />
+    </label>
+  </div>
+  
+  <div class="st_sidekick_pipeline_row" style="margin-top: 8px;">
+    <label>Embedding Provider
+      <select id="st_sidekick_pipeline_embedding_provider" class="text_pole">
+        <option value="transformers">Transformers (local)</option>
+        <option value="openai">OpenAI</option>
+        <option value="ollama">Ollama</option>
+      </select>
+    </label>
+    <button id="st_sidekick_pipeline_index_wi_vectors" type="button" class="menu_button">
+      <i class="fa-solid fa-database"></i> Index WI to Vectors
+    </button>
+  </div>
+  <div class="st_sidekick_pipeline_dim" style="margin-top: 4px; font-size: 12px;">
+    Indexes WI summaries for semantic search. Retrieves most relevant entries based on last user message.
+  </div>
+
+  <!-- Prompt Viewer Section -->
+  <h4 style="margin-top: 16px;">Prompt Inspection</h4>
+  <div class="st_sidekick_pipeline_row">
+    <button id="st_sidekick_pipeline_show_prompt_diff" type="button" class="menu_button">
+      <i class="fa-solid fa-code-compare"></i> Show Prompt Diff
+    </button>
+  </div>
+  <div class="st_sidekick_pipeline_dim" style="margin-top: 4px; font-size: 12px;">
+    View prompt before and after pipeline modifications with token counts.
+  </div>
+
+  <!-- Memory Enhancement Integration Section -->
+  <h4 style="margin-top: 16px;">Memory Enhancement Integration</h4>
+  <div class="st_sidekick_pipeline_row">
+    <span id="st_sidekick_memory_status" style="font-weight: bold;">Checking...</span>
+  </div>
+  <div class="st_sidekick_pipeline_row" style="margin-top: 8px;">
+    <label class="checkbox_label flexNoGap">
+      <input id="st_sidekick_pipeline_memory_enabled" type="checkbox" />
+      <span>Filter Memory Table Rows</span>
+    </label>
+    <label>Max Rows in Prompt
+      <input id="st_sidekick_pipeline_memory_max_rows" type="number" class="text_pole" min="1" max="50" step="1" value="10" />
+    </label>
+    <label>Row Relevance Threshold
+      <input id="st_sidekick_pipeline_memory_threshold" type="number" class="text_pole" min="0.3" max="0.9" step="0.05" value="0.6" />
+    </label>
+  </div>
+  <div class="st_sidekick_pipeline_row" style="margin-top: 8px;">
+    <label>Filtering Method
+      <select id="st_sidekick_pipeline_memory_filter_method" class="text_pole">
+        <option value="vector">Vector Embedding (best)</option>
+        <option value="keyword">Keyword Match (fast)</option>
+        <option value="hybrid">Hybrid (balanced)</option>
+      </select>
+    </label>
+  </div>
+  <div class="st_sidekick_pipeline_dim" style="margin-top: 4px; font-size: 12px;">
+    Uses vector search to inject only relevant memory table rows into prompts, reducing token usage.
+  </div>
+
+  <!-- Status -->
+  <div id="st_sidekick_pipeline_status" class="st_sidekick_pipeline_mono" style="margin-top: 12px;"></div>
 </div>

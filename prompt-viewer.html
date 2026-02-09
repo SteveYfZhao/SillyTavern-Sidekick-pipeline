@@ -1,0 +1,20 @@
+<div id="st_sidekick_pipeline_prompt_viewer_popup" class="st_sidekick_pipeline_popup">
+    <h3>Prompt Diff Viewer</h3>
+    
+    <div class="st_sidekick_prompt_diff_container" style="display: flex; gap: 10px; height: 70vh;">
+        <div style="flex: 1; display: flex; flex-direction: column;">
+            <h4>Before Pipeline</h4>
+            <pre id="st_sidekick_prompt_before" style="flex: 1; overflow: auto; padding: 10px; background: var(--black30a); border: 1px solid var(--SmartThemeBorderColor); border-radius: 5px; font-size: 12px; white-space: pre-wrap;"></pre>
+        </div>
+        <div style="flex: 1; display: flex; flex-direction: column;">
+            <h4>After Pipeline</h4>
+            <pre id="st_sidekick_prompt_after" style="flex: 1; overflow: auto; padding: 10px; background: var(--black30a); border: 1px solid var(--SmartThemeBorderColor); border-radius: 5px; font-size: 12px; white-space: pre-wrap;"></pre>
+        </div>
+    </div>
+
+    <div class="st_sidekick_prompt_stats margin-top-10">
+        <div><strong>Messages Removed:</strong> <span id="st_sidekick_prompt_removed">0</span></div>
+        <div><strong>Tokens Before:</strong> <span id="st_sidekick_prompt_tokens_before">?</span></div>
+        <div><strong>Tokens After:</strong> <span id="st_sidekick_prompt_tokens_after">?</span></div>
+    </div>
+</div>

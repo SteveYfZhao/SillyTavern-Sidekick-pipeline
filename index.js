@@ -8,6 +8,7 @@ import {
   getTokenCountAsync,
   callGenericPopup,
   POPUP_TYPE,
+  toastr,
 } from '/script.js';
 
 import {
@@ -39,7 +40,6 @@ const PROMPT_KEY = 'st_sidekick_pipeline_memory';
 
 const defaultSettings = {
   enabled: true,
-  filterOperationalInstructions: true,
   reduceHistory: true,
   debug: false,
 
@@ -57,14 +57,38 @@ const defaultSettings = {
     minTurnsBetween: 6,
   },
 
-  instructionFilterPatterns: [
-    '(?im)^\\s*(you must|you should|always|never)\\s+.*(track|update|calculate|compute|manage)\\b.*$',
-    '(?im)^\\s*\\[?(inventory|stats|status|system|quest|objective)\\]?\\s*:?\\s*(update|calculate|compute|track)\\b.*$',
-    '(?im)\\b(update|calculate|compute|track|manage)\\b.*\\b(inventory|stats|status|numbers|hp|mana|gold|coins)\\b',
-  ],
+  wiCache: {},
+  wiCacheStats: {
+    hits: 0,
+    misses: 0,
+    lastUpdate: null,
+  },
+
+  rag: {
+    enabled: false,
+    threshold: 0.7,
+    topK: 5,
+    embeddingProvider: 'transformers',
+  },
+
+  memoryEnhancement: {
+    enabled: false,
+    optimizeTables: false,
+    maxCellLength: 200,
+    compressionLevel: 'balanced',
+    autoOptimizeAfterMessages: 10,
+    rowFilterMethod: 'vector',
+    maxRowsInPrompt: 10,
+    relevanceThreshold: 0.6,
+  },
 };
 
 let lastRun = null;
+let promptBefore = null;
+let promptAfter = null;
+let abortController = null;
+let vectorExtensionAvailable = null;
+let memoryEnhancementAvailable = null;
 
 function getSettings() {
   if (!extension_settings[SETTINGS_KEY] || typeof extension_settings[SETTINGS_KEY] !== 'object') {
@@ -84,8 +108,25 @@ function getSettings() {
     if (s.thresholds[k] === undefined) s.thresholds[k] = v;
   }
 
-  if (!Array.isArray(s.instructionFilterPatterns)) {
-    s.instructionFilterPatterns = structuredClone(defaultSettings.instructionFilterPatterns);
+  if (!s.wiCache || typeof s.wiCache !== 'object') {
+    s.wiCache = {};
+  }
+  if (!s.wiCacheStats || typeof s.wiCacheStats !== 'object') {
+    s.wiCacheStats = structuredClone(defaultSettings.wiCacheStats);
+  }
+
+  if (!s.rag || typeof s.rag !== 'object') {
+    s.rag = {};
+  }
+  for (const [k, v] of Object.entries(defaultSettings.rag)) {
+    if (s.rag[k] === undefined) s.rag[k] = v;
+  }
+
+  if (!s.memoryEnhancement || typeof s.memoryEnhancement !== 'object') {
+    s.memoryEnhancement = {};
+  }
+  for (const [k, v] of Object.entries(defaultSettings.memoryEnhancement)) {
+    if (s.memoryEnhancement[k] === undefined) s.memoryEnhancement[k] = v;
   }
 
   return s;
@@ -369,36 +410,7 @@ async function maybeSummarize(coreChat, contextSize, type, { force = false } = {
   }
 }
 
-function applyInstructionFilterToSystemMessages(chatMessages, patterns) {
-  const regexes = [];
-  for (const p of patterns) {
-    try {
-      regexes.push(new RegExp(p));
-    } catch {
-      // ignore
-    }
-  }
 
-  let removedLines = 0;
-
-  for (const msg of chatMessages) {
-    if (!msg || msg.role !== 'system' || typeof msg.content !== 'string') continue;
-
-    const lines = msg.content.split('\\n');
-    const kept = [];
-    for (const line of lines) {
-      const shouldRemove = regexes.some(r => r.test(line));
-      if (shouldRemove) {
-        removedLines++;
-      } else {
-        kept.push(line);
-      }
-    }
-    msg.content = kept.join('\\n');
-  }
-
-  return removedLines;
-}
 
 function reduceHistoryInPrompt(chatMessages, keepLast) {
   const nonSystem = [];
@@ -438,11 +450,631 @@ function showLastStatePopup() {
   callGenericPopup(`<pre class=\"st_sidekick_pipeline_mono\">${payload.replaceAll('<', '&lt;')}</pre>${issues ? `<pre class=\"st_sidekick_pipeline_mono\">${issues.replaceAll('<', '&lt;')}</pre>` : ''}`, POPUP_TYPE.TEXT, 'Sidekick Pipeline');
 }
 
+// ========== Detection Functions ==========
+
+async function detectVectorExtension() {
+  if (vectorExtensionAvailable !== null) return vectorExtensionAvailable;
+  
+  try {
+    const response = await fetch('/api/vector/list-collections', {
+      method: 'POST',
+      headers: getContext().getRequestHeaders(),
+      body: JSON.stringify({}),
+    });
+    vectorExtensionAvailable = response.ok;
+  } catch (e) {
+    vectorExtensionAvailable = false;
+  }
+  
+  return vectorExtensionAvailable;
+}
+
+function detectMemoryEnhancement() {
+  if (memoryEnhancementAvailable !== null) return memoryEnhancementAvailable;
+  
+  try {
+    // Try to import the BASE object from memory enhancement
+    const meExtensionPath = '../../st-memory-enhancement/core/manager.js';
+    // Check if extension exists by looking for its container in DOM
+    const meExists = document.querySelector('[data-name=\"st-memory-enhancement\"]') !== null;
+    memoryEnhancementAvailable = meExists;
+  } catch (e) {
+    memoryEnhancementAvailable = false;
+  }
+  
+  return memoryEnhancementAvailable;
+}
+
+// ========== World Info Cache Functions ==========
+
+async function summarizeWorldInfo() {
+  const settings = getSettings();
+  abortController = new AbortController();
+  
+  try {
+    // Import world_info module
+    const { world_info } = await import('/scripts/world-info.js');
+    
+    if (!world_info || !world_info.globalSelect) {
+      toastr.error('No world info data found');
+      return;
+    }
+    
+    const allEntries = [];
+    
+    // Collect all enabled entries from global books
+    for (const bookName of world_info.globalSelect || []) {
+      const bookData = world_info[bookName];
+      if (!bookData || !bookData.entries) continue;
+      
+      for (const [uid, entry] of Object.entries(bookData.entries)) {
+        if (entry.disable) continue;
+        allEntries.push({ uid: String(uid), entry, bookName });
+      }
+    }
+    
+    if (allEntries.length === 0) {
+      toastr.info('No enabled world info entries found');
+      return;
+    }
+    
+    let processed = 0;
+    let hits = 0;
+    let misses = 0;
+    
+    const toast = toastr.info(`Processing world info entries: 0/${allEntries.length}`, 'Summarizing', { timeOut: 0, extendedTimeOut: 0 });
+    
+    for (const { uid, entry, bookName } of allEntries) {
+      if (abortController.signal.aborted) {
+        toastr.warning(`Cancelled: ${processed}/${allEntries.length} completed`);
+        return;
+      }
+      
+      const content = String(entry.content || '');
+      const contentHash = String(getStringHash(content));
+      
+      // Check cache
+      if (settings.wiCache[uid] && settings.wiCache[uid].contentHash === contentHash) {
+        hits++;
+        processed++;
+        continue;
+      }
+      
+      // Call Ollama for summaries
+      misses++;
+      
+      const systemPrompt = `You are a summarization assistant. Create two levels of summary for the provided lore text.
+Level 1: A concise 2-3 sentence summary that preserves most important details.
+Level 2: An ultra-brief one-sentence summary with only the core essence.
+Return ONLY valid JSON: {"level1": "...", "level2": "..."}`;
+      
+      const userPrompt = `Summarize this lore entry:\n\n${content}`;
+      
+      try {
+        const raw = await callSidekickOllamaJSON({
+          system: systemPrompt,
+          user: userPrompt,
+          model: settings.ollama.model,
+          url: settings.ollama.url,
+          temperature: 0.2,
+          max_tokens: 500,
+        });
+        
+        const result = safeJsonExtract(raw);
+        
+        if (result && result.level1 && result.level2) {
+          settings.wiCache[uid] = {
+            contentHash,
+            level1: String(result.level1),
+            level2: String(result.level2),
+            original: content.slice(0, 500),
+            keys: entry.key || [],
+            timestamp: Date.now(),
+            manuallyEdited: false,
+          };
+        }
+      } catch (e) {
+        console.error(`Failed to summarize WI entry ${uid}:`, e);
+      }
+      
+      processed++;
+      toast.find('.toast-message').text(`Processing world info entries: ${processed}/${allEntries.length}`);
+      
+      // Small delay to avoid overwhelming the API
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    
+    settings.wiCacheStats.hits = hits;
+    settings.wiCacheStats.misses = misses;
+    settings.wiCacheStats.lastUpdate = Date.now();
+    saveSettingsDebounced();
+    
+    toastr.clear(toast);
+    toastr.success(`Summarized ${allEntries.length} entries (${hits} cached, ${misses} new)`);
+    
+  } catch (e) {
+    console.error('summarizeWorldInfo failed:', e);
+    toastr.error(`Failed: ${e.message}`);
+  } finally {
+    abortController = null;
+  }
+}
+
+async function showWICacheViewer() {
+  const settings = getSettings();
+  const html = await renderExtensionTemplateAsync(EXTENSION_NAME, 'wi-cache-viewer');
+  const popup = callGenericPopup(html, POPUP_TYPE.TEXT, 'World Info Cache', { wide: true, large: true, allowVerticalScrolling: true });
+  
+  await popup;
+  
+  // Populate stats
+  $('#st_sidekick_cache_total').text(Object.keys(settings.wiCache).length);
+  $('#st_sidekick_cache_hits').text(settings.wiCacheStats.hits || 0);
+  $('#st_sidekick_cache_misses').text(settings.wiCacheStats.misses || 0);
+  $('#st_sidekick_cache_last_update').text(
+    settings.wiCacheStats.lastUpdate 
+      ? new Date(settings.wiCacheStats.lastUpdate).toLocaleString() 
+      : 'Never'
+  );
+  
+  // Populate table
+  const tbody = $('#st_sidekick_cache_table_body');
+  tbody.empty();
+  
+  for (const [uid, entry] of Object.entries(settings.wiCache)) {
+    const row = $('<tr></tr>');
+    if (entry.manuallyEdited) row.addClass('st_sidekick_cache_row_edited');
+    
+    row.append(`<td>${(entry.keys || []).join(', ')}</td>`);
+    row.append(`<td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis;">${entry.original || ''}</td>`);
+    
+    const level1Cell = $('<td class="editable"></td>').text(entry.level1 || '');
+    const level2Cell = $('<td class="editable"></td>').text(entry.level2 || '');
+    
+    level1Cell.on('click', function() {
+      const textarea = $('<textarea></textarea>').val(entry.level1);
+      $(this).empty().append(textarea);
+      textarea.focus();
+      textarea.on('blur', function() {
+        entry.level1 = textarea.val();
+        entry.manuallyEdited = true;
+        settings.wiCache[uid] = entry;
+        saveSettingsDebounced();
+        level1Cell.text(entry.level1);
+        row.addClass('st_sidekick_cache_row_edited');
+      });
+    });
+    
+    level2Cell.on('click', function() {
+      const textarea = $('<textarea></textarea>').val(entry.level2);
+      $(this).empty().append(textarea);
+      textarea.focus();
+      textarea.on('blur', function() {
+        entry.level2 = textarea.val();
+        entry.manuallyEdited = true;
+        settings.wiCache[uid] = entry;
+        saveSettingsDebounced();
+        level2Cell.text(entry.level2);
+        row.addClass('st_sidekick_cache_row_edited');
+      });
+    });
+    
+    row.append(level1Cell);
+    row.append(level2Cell);
+    
+    const actionsCell = $('<td></td>');
+    const deleteBtn = $('<button class="menu_button">Delete</button>');
+    deleteBtn.on('click', function() {
+      delete settings.wiCache[uid];
+      saveSettingsDebounced();
+      row.remove();
+      $('#st_sidekick_cache_total').text(Object.keys(settings.wiCache).length);
+    });
+    actionsCell.append(deleteBtn);
+    row.append(actionsCell);
+    
+    tbody.append(row);
+  }
+  
+  // Clear cache button
+  $('#st_sidekick_cache_clear').off('click').on('click', async function() {
+    const includeEdited = $('#st_sidekick_cache_include_edited').prop('checked');
+    
+    if (!includeEdited) {
+      // Keep manually edited entries
+      for (const uid in settings.wiCache) {
+        if (!settings.wiCache[uid].manuallyEdited) {
+          delete settings.wiCache[uid];
+        }
+      }
+    } else {
+      settings.wiCache = {};
+    }
+    
+    settings.wiCacheStats = { hits: 0, misses: 0, lastUpdate: null };
+    saveSettingsDebounced();
+    
+    // Close popup and re-summarize
+    $('.popup-text-close').click();
+    await summarizeWorldInfo();
+  });
+}
+
+// ========== Message Summarization ==========
+
+async function summarizeAssistantMessage(messageIndex) {
+  const settings = getSettings();
+  const ctx = getContext();
+  const message = ctx.chat[messageIndex];
+  
+  if (!message || message.is_user || message.extra?.sidekick_summary) return;
+  
+  const content = String(message.mes || '').trim();
+  if (!content || content.length < 50) return;
+  
+  try {
+    const systemPrompt = 'Summarize the assistant message in ONE sentence (max 100 chars). Focus on key actions/information.';
+    const raw = await callSidekickOllamaJSON({
+      system: systemPrompt,
+      user: content,
+      model: settings.ollama.model,
+      url: settings.ollama.url,
+      temperature: 0.2,
+      max_tokens: 100,
+    });
+    
+    const summary = raw.trim().slice(0, 150);
+    
+    if (!message.extra) message.extra = {};
+    message.extra.sidekick_summary = summary;
+    ctx.saveChat();
+    
+  } catch (e) {
+    console.error('Failed to summarize message:', e);
+  }
+}
+
+async function summarizeAllMessages() {
+  const ctx = getContext();
+  const chat = ctx.chat || [];
+  
+  const assistantMessages = chat
+    .map((m, i) => ({ msg: m, index: i }))
+    .filter(({ msg }) => !msg.is_user && !msg.is_system && !msg.extra?.sidekick_summary);
+  
+  if (assistantMessages.length === 0) {
+    toastr.info('All assistant messages already summarized');
+    return;
+  }
+  
+  const toast = toastr.info(`Summarizing messages: 0/${assistantMessages.length}`, 'Processing', { timeOut: 0 });
+  
+  for (let i = 0; i < assistantMessages.length; i++) {
+    await summarizeAssistantMessage(assistantMessages[i].index);
+    toast.find('.toast-message').text(`Summarizing messages: ${i + 1}/${assistantMessages.length}`);
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  
+  toastr.clear(toast);
+  toastr.success(`Summarized ${assistantMessages.length} messages`);
+}
+
+// ========== Vector Indexing ==========
+
+async function indexWorldInfoToVectors() {
+  const settings = getSettings();
+  
+  if (!await detectVectorExtension()) {
+    toastr.error('Vector extension not found. Please install it first.');
+    return;
+  }
+  
+  if (Object.keys(settings.wiCache).length === 0) {
+    toastr.warning('No WI cache entries. Please run "Summarize World Info" first.');
+    return;
+  }
+  
+  const ctx = getContext();
+  const collectionId = 'sidekick_wi_summaries';
+  
+  try {
+    const toast = toastr.info('Indexing world info to vectors...', 'Processing', { timeOut: 0 });
+    
+    let indexed = 0;
+    for (const [uid, entry] of Object.entries(settings.wiCache)) {
+      const text = `${entry.level1}\\n${entry.level2}`;
+      const hash = String(uid);
+      
+      const response = await fetch('/api/vector/insert', {
+        method: 'POST',
+        headers: ctx.getRequestHeaders(),
+        body: JSON.stringify({
+          collectionId,
+          text,
+          hash,
+          metadata: {
+            entryUid: uid,
+            keys: entry.keys,
+            level1: entry.level1,
+            level2: entry.level2,
+          },
+          source: settings.rag.embeddingProvider,
+        }),
+      });
+      
+      if (!response.ok) {
+        console.warn(`Failed to index WI entry ${uid}`);
+      }
+      
+      indexed++;
+      toast.find('.toast-message').text(`Indexing: ${indexed}/${Object.keys(settings.wiCache).length}`);
+    }
+    
+    toastr.clear(toast);
+    toastr.success(`Indexed ${indexed} WI entries to vectors`);
+    
+  } catch (e) {
+    console.error('Failed to index WI:', e);
+    toastr.error(`Indexing failed: ${e.message}`);
+  }
+}
+
+// ========== Prompt Diff Viewer ==========
+
+async function showPromptDiffViewer() {
+  if (!promptBefore || !promptAfter) {
+    toastr.warning('No prompt data captured yet. Generate a message first.');
+    return;
+  }
+  
+  const html = await renderExtensionTemplateAsync(EXTENSION_NAME, 'prompt-viewer');
+  const popup = callGenericPopup(html, POPUP_TYPE.TEXT, 'Prompt Diff', { wide: true, large: true });
+  
+  await popup;
+  
+  $('#st_sidekick_prompt_before').text(JSON.stringify(promptBefore, null, 2));
+  $('#st_sidekick_prompt_after').text(JSON.stringify(promptAfter, null, 2));
+  
+  const removedCount = promptBefore.length - promptAfter.length;
+  $('#st_sidekick_prompt_removed').text(removedCount);
+  
+  // Calculate tokens
+  const beforeText = promptBefore.map(m => m.content).join('\\n');
+  const afterText = promptAfter.map(m => m.content).join('\\n');
+  
+  const tokensBefore = await getTokenCountAsync(beforeText);
+  const tokensAfter = await getTokenCountAsync(afterText);
+  
+  $('#st_sidekick_prompt_tokens_before').text(tokensBefore);
+  $('#st_sidekick_prompt_tokens_after').text(tokensAfter);
+}
+
+// ========== Memory Enhancement Integration ==========
+
+async function getMemoryEnhancementBase() {
+  try {
+    const { BASE } = await import('../../st-memory-enhancement/core/manager.js');
+    return BASE;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function filterMemoryTableRows(lastUserMessage) {
+  const settings = getSettings();
+  
+  if (!settings.memoryEnhancement.enabled || !detectMemoryEnhancement()) {
+    return null;
+  }
+  
+  const BASE = await getMemoryEnhancementBase();
+  if (!BASE) return null;
+  
+  try {
+    const sheets = BASE.getChatSheets();
+    if (!sheets || sheets.length === 0) return null;
+    
+    const enabledSheets = sheets.filter(sheet => sheet.enable);
+    if (enabledSheets.length === 0) return null;
+    
+    const allRows = [];
+    
+    // Collect all rows from all enabled sheets
+    for (const sheet of enabledSheets) {
+      if (!sheet.hashSheet || sheet.hashSheet.length <= 1) continue; // Skip if no data rows
+      
+      for (let rowIndex = 1; rowIndex < sheet.hashSheet.length; rowIndex++) {
+        const row = sheet.hashSheet[rowIndex];
+        const rowData = {
+          sheetUid: sheet.uid,
+          sheetName: sheet.name || 'Unnamed',
+          rowIndex,
+          cells: /** @type {string[]} */ ([]),
+          text: '',
+        };
+        
+        // Extract cell values
+        for (const cellUid of row) {
+          const cell = sheet.cells.get(cellUid);
+          if (cell && cell.value) {
+            rowData.cells.push(String(cell.value));
+            rowData.text += String(cell.value) + ' ';
+          }
+        }
+        
+        rowData.text = rowData.text.trim();
+        if (rowData.text.length > 0) {
+          allRows.push(rowData);
+        }
+      }
+    }
+    
+    if (allRows.length === 0) return null;
+    
+    // Apply filtering method
+    let filteredRows = [];
+    
+    switch (settings.memoryEnhancement.rowFilterMethod) {
+      case 'vector':
+        filteredRows = await filterRowsByVector(allRows, lastUserMessage, settings);
+        break;
+      case 'keyword':
+        filteredRows = filterRowsByKeyword(allRows, lastUserMessage, settings);
+        break;
+      case 'hybrid':
+        // First keyword filter, then vector rank
+        const keywordFiltered = filterRowsByKeyword(allRows, lastUserMessage, { ...settings, memoryEnhancement: { ...settings.memoryEnhancement, maxRowsInPrompt: Math.min(20, allRows.length) } });
+        filteredRows = await filterRowsByVector(keywordFiltered, lastUserMessage, settings);
+        break;
+      default:
+        filteredRows = allRows.slice(0, settings.memoryEnhancement.maxRowsInPrompt);
+    }
+    
+    // Format for prompt
+    if (filteredRows.length === 0) return null;
+    
+    const lines = ['[Memory Tables - Relevant Rows]'];
+    let currentSheet = null;
+    
+    for (const row of filteredRows) {
+      if (row.sheetName !== currentSheet) {
+        currentSheet = row.sheetName;
+        lines.push(`\\n${currentSheet}:`);
+      }
+      lines.push(`  ${row.cells.join(' | ')}`);
+    }
+    
+    return lines.join('\\n');
+    
+  } catch (e) {
+    if (settings.debug) {
+      console.error('[SidekickPipeline] Memory Enhancement row filtering failed:', e);
+    }
+    return null;
+  }
+}
+
+async function filterRowsByVector(rows, queryText, settings) {
+  if (!await detectVectorExtension() || rows.length === 0) {
+    return rows.slice(0, settings.memoryEnhancement.maxRowsInPrompt);
+  }
+  
+  try {
+    const ctx = getContext();
+    const collectionId = 'sidekick_memory_rows';
+    
+    // Index rows if needed (check if collection exists)
+    const checkResponse = await fetch('/api/vector/list-collections', {
+      method: 'POST',
+      headers: ctx.getRequestHeaders(),
+      body: JSON.stringify({}),
+    });
+    
+    if (checkResponse.ok) {
+      const collections = await checkResponse.json();
+      const exists = collections.includes(collectionId);
+      
+      if (!exists) {
+        // Index all rows
+        for (let i = 0; i < rows.length; i++) {
+          const row = rows[i];
+          await fetch('/api/vector/insert', {
+            method: 'POST',
+            headers: ctx.getRequestHeaders(),
+            body: JSON.stringify({
+              collectionId,
+              text: row.text,
+              hash: `${row.sheetUid}_${row.rowIndex}`,
+              metadata: {
+                sheetUid: row.sheetUid,
+                sheetName: row.sheetName,
+                rowIndex: row.rowIndex,
+                cells: row.cells,
+              },
+              source: settings.rag.embeddingProvider,
+            }),
+          });
+        }
+      }
+    }
+    
+    // Query for relevant rows
+    const queryResponse = await fetch('/api/vector/query', {
+      method: 'POST',
+      headers: ctx.getRequestHeaders(),
+      body: JSON.stringify({
+        collectionId,
+        searchText: queryText,
+        topK: settings.memoryEnhancement.maxRowsInPrompt,
+        threshold: settings.memoryEnhancement.relevanceThreshold,
+        source: settings.rag.embeddingProvider,
+      }),
+    });
+    
+    if (!queryResponse.ok) {
+      return rows.slice(0, settings.memoryEnhancement.maxRowsInPrompt);
+    }
+    
+    const results = await queryResponse.json();
+    
+    if (!results.metadata || results.metadata.length === 0) {
+      return rows.slice(0, settings.memoryEnhancement.maxRowsInPrompt);
+    }
+    
+    // Map results back to rows
+    const filteredRows = results.metadata.map(meta => {
+      const matchingRow = rows.find(r => 
+        r.sheetUid === meta.sheetUid && r.rowIndex === meta.rowIndex
+      );
+      return matchingRow || {
+        sheetUid: meta.sheetUid,
+        sheetName: meta.sheetName,
+        rowIndex: meta.rowIndex,
+        cells: meta.cells,
+        text: meta.cells.join(' '),
+      };
+    });
+    
+    return filteredRows;
+    
+  } catch (e) {
+    console.error('Vector filtering failed:', e);
+    return rows.slice(0, settings.memoryEnhancement.maxRowsInPrompt);
+  }
+}
+
+function filterRowsByKeyword(rows, queryText, settings) {
+  // Extract keywords from query
+  const keywords = queryText
+    .toLowerCase()
+    .replace(/[^\w\s]/g, ' ')
+    .split(/\s+/)
+    .filter(w => w.length > 3)
+    .slice(0, 20);
+  
+  if (keywords.length === 0) {
+    return rows.slice(0, settings.memoryEnhancement.maxRowsInPrompt);
+  }
+  
+  // Score each row by keyword matches
+  const scored = rows.map(row => {
+    const rowText = row.text.toLowerCase();
+    const matches = keywords.filter(kw => rowText.includes(kw)).length;
+    return { row, score: matches };
+  }).filter(item => item.score > 0);
+  
+  // Sort by score descending
+  scored.sort((a, b) => b.score - a.score);
+  
+  return scored
+    .slice(0, settings.memoryEnhancement.maxRowsInPrompt)
+    .map(item => item.row);
+}
+
 function setupUi() {
   const settings = getSettings();
 
   $('#st_sidekick_pipeline_enabled').prop('checked', !!settings.enabled);
-  $('#st_sidekick_pipeline_filter_instructions').prop('checked', !!settings.filterOperationalInstructions);
   $('#st_sidekick_pipeline_reduce_history').prop('checked', !!settings.reduceHistory);
   $('#st_sidekick_pipeline_debug').prop('checked', !!settings.debug);
 
@@ -452,11 +1084,22 @@ function setupUi() {
 
   $('#st_sidekick_pipeline_start_occ').val(settings.thresholds.startOccupancy);
   $('#st_sidekick_pipeline_cooldown').val(settings.thresholds.minTurnsBetween);
+  
+  // RAG settings
+  $('#st_sidekick_pipeline_rag_enabled').prop('checked', !!settings.rag.enabled);
+  $('#st_sidekick_pipeline_rag_threshold').val(settings.rag.threshold);
+  $('#st_sidekick_pipeline_rag_topk').val(settings.rag.topK);
+  $('#st_sidekick_pipeline_embedding_provider').val(settings.rag.embeddingProvider);
+  
+  // Memory Enhancement settings
+  $('#st_sidekick_pipeline_memory_enabled').prop('checked', !!settings.memoryEnhancement.enabled);
+  $('#st_sidekick_pipeline_memory_max_rows').val(settings.memoryEnhancement.maxRowsInPrompt);
+  $('#st_sidekick_pipeline_memory_threshold').val(settings.memoryEnhancement.relevanceThreshold);
+  $('#st_sidekick_pipeline_memory_filter_method').val(settings.memoryEnhancement.rowFilterMethod);
 
   const save = debounce(() => {
     const s = getSettings();
     s.enabled = $('#st_sidekick_pipeline_enabled').prop('checked');
-    s.filterOperationalInstructions = $('#st_sidekick_pipeline_filter_instructions').prop('checked');
     s.reduceHistory = $('#st_sidekick_pipeline_reduce_history').prop('checked');
     s.debug = $('#st_sidekick_pipeline_debug').prop('checked');
 
@@ -466,6 +1109,18 @@ function setupUi() {
 
     s.thresholds.startOccupancy = Number($('#st_sidekick_pipeline_start_occ').val() || defaultSettings.thresholds.startOccupancy);
     s.thresholds.minTurnsBetween = Number($('#st_sidekick_pipeline_cooldown').val() || defaultSettings.thresholds.minTurnsBetween);
+    
+    // RAG settings
+    s.rag.enabled = $('#st_sidekick_pipeline_rag_enabled').prop('checked');
+    s.rag.threshold = Number($('#st_sidekick_pipeline_rag_threshold').val() || 0.7);
+    s.rag.topK = Number($('#st_sidekick_pipeline_rag_topk').val() || 5);
+    s.rag.embeddingProvider = String($('#st_sidekick_pipeline_embedding_provider').val() || 'transformers');
+    
+    // Memory Enhancement settings
+    s.memoryEnhancement.enabled = $('#st_sidekick_pipeline_memory_enabled').prop('checked');
+    s.memoryEnhancement.maxRowsInPrompt = Number($('#st_sidekick_pipeline_memory_max_rows').val() || 10);
+    s.memoryEnhancement.relevanceThreshold = Number($('#st_sidekick_pipeline_memory_threshold').val() || 0.6);
+    s.memoryEnhancement.rowFilterMethod = String($('#st_sidekick_pipeline_memory_filter_method').val() || 'vector');
 
     saveSettingsDebounced();
   }, 250);
@@ -478,12 +1133,61 @@ function setupUi() {
     const contextSize = ctx.maxContext || 4096;
     await maybeSummarize(chat, contextSize, 'normal', { force: true });
   });
+  
+  // New button handlers
+  $('#st_sidekick_pipeline_summarize_wi').off('click').on('click', summarizeWorldInfo);
+  $('#st_sidekick_pipeline_view_wi_cache').off('click').on('click', showWICacheViewer);
+  $('#st_sidekick_pipeline_summarize_messages').off('click').on('click', summarizeAllMessages);
+  $('#st_sidekick_pipeline_index_wi_vectors').off('click').on('click', indexWorldInfoToVectors);
+  $('#st_sidekick_pipeline_show_prompt_diff').off('click').on('click', showPromptDiffViewer);
 }
 
 jQuery(async () => {
   const settingsHtml = await renderExtensionTemplateAsync(EXTENSION_NAME, 'settings', { defaultSettings });
   $('#extensions_settings2').append(settingsHtml);
+  
+  // Add wand menu button
+  const wandHtml = await renderExtensionTemplateAsync(EXTENSION_NAME, 'wand-button');
+  $('#st_sidekick_pipeline_wand_container').html(wandHtml);
+  
+  // Wire wand button to open settings
+  $('#st_sidekick_pipeline_wand_button').on('click', () => {
+    $('#extensionsMenuButton').trigger('click');
+    setTimeout(() => {
+      const settingsBlock = $('#st_sidekick_pipeline_settings').closest('.inline-drawer');
+      if (settingsBlock.length) {
+        settingsBlock[0].scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }, 100);
+  });
+  
   setupUi();
+  
+  // Check for extensions and update UI
+  await detectVectorExtension();
+  detectMemoryEnhancement();
+  
+  if (!vectorExtensionAvailable) {
+    $('#st_sidekick_vector_warning').show();
+  }
+  
+  if (memoryEnhancementAvailable) {
+    $('#st_sidekick_memory_status').text('✓ Memory Enhancement detected').css('color', 'green');
+  } else {
+    $('#st_sidekick_memory_status').text('✗ Not found (optional)').css('color', 'gray');
+  }
+  
+  // Hook MESSAGE_RECEIVED for auto-summarization
+  eventSource.on(event_types.MESSAGE_RECEIVED, async (messageIndex) => {
+    const settings = getSettings();
+    if (!settings.enabled) return;
+    
+    const ctx = getContext();
+    const msg = ctx.chat[messageIndex];
+    if (msg && !msg.is_user && !msg.is_system) {
+      await summarizeAssistantMessage(messageIndex);
+    }
+  });
 
   eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, async (eventData) => {
     const settings = getSettings();
@@ -492,20 +1196,86 @@ jQuery(async () => {
     if (eventData?.dryRun) return;
     if (!Array.isArray(eventData.chat)) return;
 
+    // Capture prompt before modifications
+    promptBefore = JSON.parse(JSON.stringify(eventData.chat));
+    
     const meta = getPipelineMetadata();
-
-    let removedLines = 0;
-    if (settings.filterOperationalInstructions) {
-      removedLines = applyInstructionFilterToSystemMessages(eventData.chat, settings.instructionFilterPatterns);
+    
+    // Memory Enhancement: Filter and inject relevant table rows
+    if (settings.memoryEnhancement.enabled && detectMemoryEnhancement()) {
+      try {
+        const lastUserMsg = eventData.chat.filter(m => m.role === 'user').slice(-1)[0];
+        if (lastUserMsg) {
+          const memoryContext = await filterMemoryTableRows(lastUserMsg.content);
+          if (memoryContext) {
+            setExtensionPrompt(
+              'st_sidekick_pipeline_memory',
+              memoryContext,
+              extension_prompt_types.IN_PROMPT,
+              0,
+              false,
+              extension_prompt_roles.SYSTEM
+            );
+          }
+        }
+      } catch (e) {
+        if (settings.debug) console.error('[SidekickPipeline] Memory Enhancement filtering failed:', e);
+      }
+    }
+    
+    // RAG: Inject relevant WI summaries
+    if (settings.rag.enabled && await detectVectorExtension()) {
+      try {
+        const lastUserMsg = eventData.chat.filter(m => m.role === 'user').slice(-1)[0];
+        if (lastUserMsg) {
+          const ctx = getContext();
+          const response = await fetch('/api/vector/query', {
+            method: 'POST',
+            headers: ctx.getRequestHeaders(),
+            body: JSON.stringify({
+              collectionId: 'sidekick_wi_summaries',
+              searchText: lastUserMsg.content,
+              topK: settings.rag.topK,
+              threshold: settings.rag.threshold,
+              source: settings.rag.embeddingProvider,
+            }),
+          });
+          
+          if (response.ok) {
+            const results = await response.json();
+            if (results.metadata && results.metadata.length > 0) {
+              const ragContext = results.metadata
+                .map(m => `- ${m.level2 || m.text}`)
+                .join('\\n');
+              
+              if (ragContext) {
+                setExtensionPrompt(
+                  'st_sidekick_pipeline_rag',
+                  `[RAG Context]\\n${ragContext}`,
+                  extension_prompt_types.IN_PROMPT,
+                  0,
+                  false,
+                  extension_prompt_roles.SYSTEM
+                );
+              }
+            }
+          }
+        }
+      } catch (e) {
+        if (settings.debug) console.error('[SidekickPipeline] RAG failed:', e);
+      }
     }
 
     let removedMsgs = 0;
     if (settings.reduceHistory && meta?.lastState && meta?.lastMesHash && lastRun?.lastMesHash && meta.lastMesHash === lastRun.lastMesHash) {
       removedMsgs = reduceHistoryInPrompt(eventData.chat, meta.preserveLastMessages || settings.preserveLastMessages);
     }
+    
+    // Capture prompt after modifications
+    promptAfter = JSON.parse(JSON.stringify(eventData.chat));
 
-    if (settings.debug && (removedLines || removedMsgs)) {
-      console.debug('[SidekickPipeline] filtered lines:', removedLines, 'removed msgs:', removedMsgs);
+    if (settings.debug && removedMsgs) {
+      console.debug('[SidekickPipeline] removed msgs:', removedMsgs);
     }
   });
 

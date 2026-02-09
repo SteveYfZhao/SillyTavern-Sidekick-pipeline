@@ -1,0 +1,39 @@
+<div id="st_sidekick_pipeline_wi_cache_popup" class="st_sidekick_pipeline_popup">
+    <h3>World Info Cache</h3>
+    
+    <div class="st_sidekick_pipeline_cache_stats">
+        <div class="flex-container flexGap10 flexWrap">
+            <div><strong>Total Entries:</strong> <span id="st_sidekick_cache_total">0</span></div>
+            <div><strong>Cache Hits:</strong> <span id="st_sidekick_cache_hits">0</span></div>
+            <div><strong>Cache Misses:</strong> <span id="st_sidekick_cache_misses">0</span></div>
+            <div><strong>Last Update:</strong> <span id="st_sidekick_cache_last_update">Never</span></div>
+        </div>
+    </div>
+
+    <div class="st_sidekick_pipeline_cache_controls margin-top-10">
+        <button id="st_sidekick_cache_clear" class="menu_button">
+            <i class="fa-solid fa-trash"></i> Clear Cache & Re-summarize
+        </button>
+        <label class="checkbox_label marginBot5">
+            <input type="checkbox" id="st_sidekick_cache_include_edited" />
+            <span>Include manually edited entries</span>
+        </label>
+    </div>
+
+    <div id="st_sidekick_cache_table_container" class="margin-top-10" style="max-height: 60vh; overflow-y: auto;">
+        <table id="st_sidekick_cache_table" class="st_sidekick_cache_table" style="width: 100%; border-collapse: collapse;">
+            <thead>
+                <tr style="position: sticky; top: 0; background: var(--SmartThemeBodyColor); z-index: 1;">
+                    <th style="padding: 8px; border: 1px solid var(--SmartThemeBorderColor);">Keys</th>
+                    <th style="padding: 8px; border: 1px solid var(--SmartThemeBorderColor);">Original (truncated)</th>
+                    <th style="padding: 8px; border: 1px solid var(--SmartThemeBorderColor);">Level 1 Summary</th>
+                    <th style="padding: 8px; border: 1px solid var(--SmartThemeBorderColor);">Level 2 Summary</th>
+                    <th style="padding: 8px; border: 1px solid var(--SmartThemeBorderColor);">Actions</th>
+                </tr>
+            </thead>
+            <tbody id="st_sidekick_cache_table_body">
+                <!-- Rows populated by JS -->
+            </tbody>
+        </table>
+    </div>
+</div>
