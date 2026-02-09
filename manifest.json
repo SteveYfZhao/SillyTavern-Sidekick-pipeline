@@ -1,0 +1,11 @@
+{
+  "display_name": "Sidekick Pipeline (MVP)",
+  "loading_order": 35,
+  "requires": [],
+  "js": "index.js",
+  "css": "style.css",
+  "generate_interceptor": "stSidekickPipelineInterceptor",
+  "author": "local",
+  "version": "0.1.0",
+  "homePage": ""
+}

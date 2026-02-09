@@ -1,0 +1,50 @@
+<div class="st_sidekick_pipeline_block" id="st_sidekick_pipeline_settings">
+  <h4>Sidekick Pipeline (MVP)</h4>
+  <div class="st_sidekick_pipeline_row">
+    <label class="checkbox_label flexNoGap">
+      <input id="st_sidekick_pipeline_enabled" type="checkbox" />
+      <span>Enabled</span>
+    </label>
+    <label class="checkbox_label flexNoGap">
+      <input id="st_sidekick_pipeline_filter_instructions" type="checkbox" />
+      <span>Filter operational instructions</span>
+    </label>
+    <label class="checkbox_label flexNoGap">
+      <input id="st_sidekick_pipeline_reduce_history" type="checkbox" />
+      <span>Reduce history (keep summary + recent)</span>
+    </label>
+    <label class="checkbox_label flexNoGap">
+      <input id="st_sidekick_pipeline_debug" type="checkbox" />
+      <span>Debug</span>
+    </label>
+  </div>
+
+  <div class="st_sidekick_pipeline_row" style="margin-top: 8px;">
+    <label>Ollama URL
+      <input id="st_sidekick_pipeline_ollama_url" type="text" class="text_pole" placeholder="http://localhost:11434/v1" />
+    </label>
+    <label>Ollama model
+      <input id="st_sidekick_pipeline_ollama_model" type="text" class="text_pole" placeholder="qwen3:8b" />
+    </label>
+    <label>Keep last messages
+      <input id="st_sidekick_pipeline_keep_last" type="number" class="text_pole" min="2" max="50" step="1" />
+    </label>
+  </div>
+
+  <div class="st_sidekick_pipeline_row" style="margin-top: 8px;">
+    <label>Start occupancy
+      <input id="st_sidekick_pipeline_start_occ" type="number" class="text_pole" min="0.1" max="0.99" step="0.01" />
+    </label>
+    <label>Cooldown turns
+      <input id="st_sidekick_pipeline_cooldown" type="number" class="text_pole" min="0" max="50" step="1" />
+    </label>
+    <button id="st_sidekick_pipeline_show_state" type="button" class="menu_button">Show last state</button>
+    <button id="st_sidekick_pipeline_force" type="button" class="menu_button">Force summarize now</button>
+  </div>
+
+  <div class="st_sidekick_pipeline_row st_sidekick_pipeline_dim" style="margin-top: 8px;">
+    <span>Runs only for normal/continue. Reviewer stage is MVP-off (issues only).</span>
+  </div>
+
+  <div id="st_sidekick_pipeline_status" class="st_sidekick_pipeline_mono" style="margin-top: 8px;"></div>
+</div>

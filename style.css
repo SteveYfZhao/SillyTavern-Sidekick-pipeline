@@ -1,0 +1,39 @@
+.st_sidekick_pipeline_block {
+  border: 1px solid var(--SmartThemeBorderColor, rgba(255,255,255,0.12));
+  border-radius: 8px;
+  padding: 10px;
+  margin: 8px 0;
+}
+
+.st_sidekick_pipeline_block h4 {
+  margin: 0 0 8px 0;
+}
+
+.st_sidekick_pipeline_row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.st_sidekick_pipeline_row label {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.st_sidekick_pipeline_row input[type="text"],
+.st_sidekick_pipeline_row input[type="number"] {
+  min-width: 160px;
+}
+
+.st_sidekick_pipeline_mono {
+  font-family: var(--font_mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace);
+  font-size: 12px;
+  white-space: pre-wrap;
+  opacity: 0.9;
+}
+
+.st_sidekick_pipeline_dim {
+  opacity: 0.75;
+}
