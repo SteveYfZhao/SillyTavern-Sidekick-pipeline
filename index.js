@@ -1,11 +1,13 @@
 import {
   eventSource,
   event_types,
+} from '/scripts/events.js';
+
+import {
   extension_prompt_roles,
   extension_prompt_types,
   saveSettingsDebounced,
   setExtensionPrompt,
-  getTokenCountAsync,
 } from '/script.js';
 
 import {
@@ -19,7 +21,7 @@ import {
   POPUP_TYPE,
 } from '/scripts/popup.js';
 
-import { toastr } from '/scripts/RossAscends-mods.js';
+import { getTokenCountAsync } from '/scripts/tokenizers.js';
 
 import { getStringHash, debounce } from '/scripts/utils.js';
 
