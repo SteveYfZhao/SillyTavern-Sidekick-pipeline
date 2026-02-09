@@ -6,9 +6,6 @@ import {
   saveSettingsDebounced,
   setExtensionPrompt,
   getTokenCountAsync,
-  callGenericPopup,
-  POPUP_TYPE,
-  toastr,
 } from '/script.js';
 
 import {
@@ -16,6 +13,13 @@ import {
   getContext,
   renderExtensionTemplateAsync,
 } from '/scripts/extensions.js';
+
+import {
+  callGenericPopup,
+  POPUP_TYPE,
+} from '/scripts/popup.js';
+
+import { toastr } from '/scripts/RossAscends-mods.js';
 
 import { getStringHash, debounce } from '/scripts/utils.js';
 
