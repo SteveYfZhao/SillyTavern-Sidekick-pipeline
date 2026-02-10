@@ -468,7 +468,7 @@ async function detectVectorExtension() {
     // Also verify API is available if extension settings exist
     if (vectorExtensionAvailable) {
       try {
-        const response = await fetch('/api/vector/list-collections', {
+        const response = await fetch('/api/vector/list', {
           method: 'POST',
           headers: getContext().getRequestHeaders(),
           body: JSON.stringify({}),
@@ -980,7 +980,7 @@ async function filterRowsByVector(rows, queryText, settings) {
     const collectionId = 'sidekick_memory_rows';
     
     // Index rows if needed (check if collection exists)
-    const checkResponse = await fetch('/api/vector/list-collections', {
+    const checkResponse = await fetch('/api/vector/list', {
       method: 'POST',
       headers: ctx.getRequestHeaders(),
       body: JSON.stringify({}),
