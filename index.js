@@ -464,20 +464,6 @@ async function detectVectorExtension() {
   try {
     // Check if vectors extension is loaded by checking extension_settings
     vectorExtensionAvailable = !!(extension_settings.vectors && typeof extension_settings.vectors === 'object');
-    
-    // Also verify API is available if extension settings exist
-    if (vectorExtensionAvailable) {
-      try {
-        const response = await fetch('/api/vector/list', {
-          method: 'POST',
-          headers: getContext().getRequestHeaders(),
-          body: JSON.stringify({}),
-        });
-        vectorExtensionAvailable = response.ok;
-      } catch (e) {
-        vectorExtensionAvailable = false;
-      }
-    }
   } catch (e) {
     vectorExtensionAvailable = false;
   }
